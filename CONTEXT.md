@@ -148,3 +148,42 @@ python3 scripts/04_build_router.py
 python3 scripts/05_evaluate.py
 python3 scripts/06_visualize.py
 ```
+
+### FEEDBACK: 
+Honest take:                                                                                                                                                           
+                                                                                                                                                                       
+  The core idea is genuinely interesting. Joint routing over models AND compression is a real extension of UniRoute that nobody's published. The insight that different  
+  prompt types tolerate compression differently — and that this interacts with model choice — is non-obvious and backed by your data. The finding that aggressive
+  compression can increase cost (via verbose output) is a real discovery.                                                                                                
+                                                                                                                                                                      
+  What's strong:                                                                                                                                                         
+  - The theoretical grounding from UniRoute gives it credibility
+  - The routing heatmap proves the router makes meaningfully different decisions per cluster                                                                             
+  - Dynamic model pools at inference time (no retraining) is a clean design                 
+  - The pipeline engineering is solid — auto-resume, caching, batch judging                                                                                              
+                                                                                                                                                                         
+  What's a bit weak right now:                                                                                                                                           
+  - The test set is small (60 prompts) — results could shift with more data                                                                                              
+  - K=20 was never tuned — the clustering might be noisy                                                                                                                 
+  - The router can't beat "just use GPT-4o-mini" on cost, and can't match "just use Sonnet" on accuracy. It lives in the middle. That's useful but not dramatic.         
+  - The model pool is lopsided — GPT-4o-mini is so cheap it dominates the cost axis. Models closer in price (e.g., Haiku vs GPT-4o vs Gemini Flash) would make the model 
+  routing dimension more interesting.                                                                                                                                    
+                                                                                                                                                                         
+  For a TTC work trial though? It's strong. You built a working system end-to-end in a day, grounded it in a real paper, and produced quantitative results with real API 
+  calls. The CONTEXT.md and pipeline design show engineering maturity. Most work trial submissions are either pure theory or pure hacking — this is both.                
+                                                                                                                                                                      
+  The main thing I'd emphasize in a writeup: the router's value scales with the model pool. With 3 models it's decent; with 10+ models at varying price points, the      
+  routing surface gets much richer and the adaptive advantage grows.  
+
+
+  ### TODO
+  ❯ okay. Pause for now. I'll continue it later. If i want to continue, it's just python3 scripts/02_grid_search.py, right?                                                
+                                                                                                                                                                         
+⏺ Yep, exactly. python3 scripts/02_grid_search.py — it'll auto-resume from the checkpoint and pick up the remaining ~1,100 calls.                                        
+                                                                                                                                                                       
+  After it finishes, the next steps are:                                                                                                                                 
+  1. python3 scripts/07_llm_judge.py — judge the new results                                                                                                             
+  2. Merge judge data into clustered parquet                                                                                                                             
+  3. python3 scripts/04_build_router.py — rebuild with all 10 agg levels                                                                                              
+  4. python3 scripts/05_evaluate.py — re-evaluate                                                                                                                        
+  5. python3 scripts/06_visualize.py — regenerate plots 
