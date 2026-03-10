@@ -14,8 +14,8 @@ from router.evaluate import exact_match, f1_score, contains_answer, compute_cost
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 
 # Use a small subset for validation
-VALIDATION_PROMPTS = 2
-VALIDATION_AGG_LEVELS = AGGRESSIVENESS_LEVELS
+VALIDATION_PROMPTS = 1
+VALIDATION_AGG_LEVELS = [0.0, 0.4, 0.9]
 
 
 def load_prompts(n: int) -> list[dict]:

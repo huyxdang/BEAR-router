@@ -2,8 +2,10 @@ import time
 
 import anthropic
 import openai
+from google import genai
+from google.genai import types
 
-from config import ANTHROPIC_API_KEY, OPENAI_API_KEY
+from config import ANTHROPIC_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer the question based on the provided context. "
@@ -13,6 +15,7 @@ SYSTEM_PROMPT = (
 # Sync clients
 _anthropic_client = None
 _openai_client = None
+_google_client = None
 
 # Async clients
 _async_anthropic_client = None
@@ -40,6 +43,13 @@ def _get_async_anthropic_client():
     return _async_anthropic_client
 
 
+def _get_google_client():
+    global _google_client
+    if _google_client is None:
+        _google_client = genai.Client(api_key=GOOGLE_API_KEY)
+    return _google_client
+
+
 def _get_async_openai_client():
     global _async_openai_client
     if _async_openai_client is None:
@@ -61,7 +71,7 @@ def call_llm(model_config: dict, prompt_text: str) -> dict:
         client = _get_anthropic_client()
         response = client.messages.create(
             model=model_id,
-            max_tokens=100,
+            max_tokens=256,
             temperature=0,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt_text}],
@@ -83,7 +93,7 @@ def call_llm(model_config: dict, prompt_text: str) -> dict:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt_text},
             ],
-            max_tokens=100,
+            max_completion_tokens=256,
             temperature=0,
         )
         latency = time.time() - start
@@ -91,6 +101,25 @@ def call_llm(model_config: dict, prompt_text: str) -> dict:
             "response_text": response.choices[0].message.content or "",
             "input_tokens": response.usage.prompt_tokens,
             "output_tokens": response.usage.completion_tokens,
+            "latency": latency,
+        }
+
+    elif provider == "google":
+        client = _get_google_client()
+        response = client.models.generate_content(
+            model=model_id,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0,
+                max_output_tokens=256,
+            ),
+        )
+        latency = time.time() - start
+        return {
+            "response_text": response.text or "",
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count,
             "latency": latency,
         }
 
@@ -109,7 +138,7 @@ async def call_llm_async(model_config: dict, prompt_text: str) -> dict:
         client = _get_async_anthropic_client()
         response = await client.messages.create(
             model=model_id,
-            max_tokens=100,
+            max_tokens=256,
             temperature=0,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt_text}],
@@ -130,7 +159,7 @@ async def call_llm_async(model_config: dict, prompt_text: str) -> dict:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt_text},
             ],
-            max_tokens=100,
+            max_completion_tokens=256,
             temperature=0,
         )
         latency = time.time() - start
@@ -138,6 +167,25 @@ async def call_llm_async(model_config: dict, prompt_text: str) -> dict:
             "response_text": response.choices[0].message.content or "",
             "input_tokens": response.usage.prompt_tokens,
             "output_tokens": response.usage.completion_tokens,
+            "latency": latency,
+        }
+
+    elif provider == "google":
+        client = _get_google_client()
+        response = await client.aio.models.generate_content(
+            model=model_id,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0,
+                max_output_tokens=256,
+            ),
+        )
+        latency = time.time() - start
+        return {
+            "response_text": response.text or "",
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count,
             "latency": latency,
         }
 

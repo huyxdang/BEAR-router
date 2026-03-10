@@ -30,8 +30,9 @@ COMPRESS_CACHE_PATH = os.path.join(RESULTS_DIR, "compressed_cache.json")
 
 TRIAL_ID = "run_001"
 BATCH_SIZE = 10  # concurrent LLM calls
-MAX_RETRIES = 2
+MAX_RETRIES = 5
 RETRY_DELAY = 5  # seconds
+RATE_LIMIT_DELAY = 30  # seconds to wait on 429
 CHECKPOINT_EVERY = 50  # save after this many successful calls
 
 
@@ -131,6 +132,28 @@ def build_record(prompt, agg, comp, model, llm_result):
     }
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    """Check if an exception is a rate limit error."""
+    msg = str(e).lower()
+    if "429" in msg or "rate" in msg:
+        return True
+    if hasattr(e, "status_code") and e.status_code == 429:
+        return True
+    return False
+
+
+def _get_retry_after(e: Exception) -> float:
+    """Extract retry-after seconds from error, or return default."""
+    if hasattr(e, "response") and hasattr(e.response, "headers"):
+        ra = e.response.headers.get("retry-after")
+        if ra:
+            try:
+                return float(ra)
+            except ValueError:
+                pass
+    return RATE_LIMIT_DELAY
+
+
 async def process_one(prompt, agg, comp, model):
     """Process a single (prompt, agg, model) combo. Returns (combo_key, record) or (combo_key, None) on failure."""
     combo_key = (prompt["id"], agg, model["name"])
@@ -142,9 +165,15 @@ async def process_one(prompt, agg, comp, model):
             return combo_key, record
         except Exception as e:
             if attempt < MAX_RETRIES:
-                print(f"  RETRY {attempt + 1}/{MAX_RETRIES} "
-                      f"{prompt['id']} / {model['name']} / agg={agg}: {e}")
-                await asyncio.sleep(RETRY_DELAY)
+                if _is_rate_limit(e):
+                    delay = _get_retry_after(e)
+                    print(f"  RATE LIMITED {model['name']} — waiting {delay:.0f}s "
+                          f"(attempt {attempt + 1}/{MAX_RETRIES})")
+                    await asyncio.sleep(delay)
+                else:
+                    print(f"  RETRY {attempt + 1}/{MAX_RETRIES} "
+                          f"{prompt['id']} / {model['name']} / agg={agg}: {e}")
+                    await asyncio.sleep(RETRY_DELAY * (2 ** attempt))
             else:
                 print(f"  FAILED {prompt['id']} / {model['name']} / agg={agg}: {e}")
                 return combo_key, None

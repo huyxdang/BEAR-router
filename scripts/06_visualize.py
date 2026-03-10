@@ -24,6 +24,9 @@ COLORS = {
     "claude-haiku": "#E07B4B",
     "claude-sonnet": "#D4A054",
     "gpt-4o-mini": "#4B9FE0",
+    "gpt-5.4": "#9B59B6",
+    "gpt-4.1-nano": "#1ABC9C",
+    "gpt-4.1": "#3498DB",
     "router": "#2ECC71",
     "router_cheap": "#27AE60",
 }
@@ -32,7 +35,18 @@ MODEL_MARKERS = {
     "claude-haiku": "s",
     "claude-sonnet": "D",
     "gpt-4o-mini": "o",
+    "gpt-5.4": "^",
+    "gpt-4.1-nano": "v",
+    "gpt-4.1": "P",
 }
+
+
+def _get_color(model_name: str) -> str:
+    return COLORS.get(model_name, "#95A5A6")
+
+
+def _get_marker(model_name: str) -> str:
+    return MODEL_MARKERS.get(model_name, "o")
 
 
 def load_data():
@@ -48,26 +62,31 @@ def plot_1_deferral_curve(df, evaluation):
 
     # Plot baseline points
     baselines = evaluation["baselines"]
+    # Deduce model name from baseline key: everything before the last _agg* segment
     for name, result in baselines.items():
-        if result["cost"] == 0:
+        if result["cost"] == 0 or result["count"] == 0:
             continue
-        # Parse model name from baseline key
-        if "sonnet" in name:
-            model = "claude-sonnet"
-        elif "haiku" in name:
-            model = "claude-haiku"
-        else:
-            model = "gpt-4o-mini"
-
-        agg = name.split("_")[-1].replace("agg", "").replace("compress", "0.0")
-        if agg == "no":
-            agg = "0.0"
-        else:
-            agg = f"0.{agg.replace('0', '')}" if len(agg) == 2 else agg
+        # Key format: "{model_name}_agg{X}" — find model by matching known models
+        model = None
+        for m in sorted(COLORS.keys(), key=len, reverse=True):
+            if m == "router" or m == "router_cheap":
+                continue
+            # Check if the key starts with a sanitized version of the model name
+            if name.startswith(m.replace("-", "").replace(".", "")):
+                model = m
+                break
+        if model is None:
+            # Fallback: try to find model in the grid data
+            for m in df["model_name"].unique():
+                if m.replace("-", "").replace(".", "") in name:
+                    model = m
+                    break
+        if model is None:
+            continue
 
         ax.scatter(
             result["cost"], result["accuracy"],
-            c=COLORS[model], marker=MODEL_MARKERS[model],
+            c=_get_color(model), marker=_get_marker(model),
             s=100, zorder=5, edgecolors="black", linewidths=0.5,
         )
         ax.annotate(
@@ -87,7 +106,7 @@ def plot_1_deferral_curve(df, evaluation):
     curve_cheap = pd.DataFrame(evaluation["router_curve_cheap"])
     curve_cheap = curve_cheap.sort_values("cost").drop_duplicates(subset="cost", keep="last")
     ax.plot(curve_cheap["cost"], curve_cheap["accuracy"], color=COLORS["router_cheap"],
-            linewidth=2.5, linestyle="--", label="Adaptive Router (haiku + gpt4o-mini)", zorder=4)
+            linewidth=2.5, linestyle="--", label="Adaptive Router (cheap models)", zorder=4)
 
     ax.set_xlabel("Average Cost per Request (USD)", fontsize=12)
     ax.set_ylabel("Accuracy (LLM Judge)", fontsize=12)
@@ -112,7 +131,7 @@ def plot_2_compression_vs_accuracy(df):
         for model in df["model_name"].unique():
             sub = df[df["model_name"] == model]
             means = sub.groupby("aggressiveness")[metric].mean()
-            ax.plot(means.index, means.values, marker="o", color=COLORS[model],
+            ax.plot(means.index, means.values, marker="o", color=_get_color(model),
                     label=model, linewidth=2, markersize=6)
 
         ax.set_xlabel("Aggressiveness", fontsize=11)
@@ -140,8 +159,8 @@ def plot_3_cost_vs_accuracy_scatter(df):
             ax.scatter(
                 sub["total_cost_usd"].mean(),
                 sub["llm_judge_correct"].mean(),
-                c=COLORS[model],
-                marker=MODEL_MARKERS[model],
+                c=_get_color(model),
+                marker=_get_marker(model),
                 s=80 + agg * 100,  # bigger = more aggressive
                 alpha=0.8,
                 edgecolors="black",
@@ -156,7 +175,7 @@ def plot_3_cost_vs_accuracy_scatter(df):
 
     # Legend
     for model in df["model_name"].unique():
-        ax.scatter([], [], c=COLORS[model], marker=MODEL_MARKERS[model],
+        ax.scatter([], [], c=_get_color(model), marker=_get_marker(model),
                    s=80, label=model, edgecolors="black", linewidths=0.5)
     ax.legend(fontsize=10)
 
@@ -238,7 +257,7 @@ def plot_5_benchmark_comparison(df):
         metric_col = "llm_judge_correct" if "llm_judge_correct" in sub.columns else "f1_score"
         pivot = sub.pivot_table(values=metric_col, index="aggressiveness",
                                 columns="model_name", aggfunc="mean")
-        pivot.plot(kind="bar", ax=ax, color=[COLORS[m] for m in pivot.columns],
+        pivot.plot(kind="bar", ax=ax, color=[_get_color(m) for m in pivot.columns],
                    edgecolor="black", linewidth=0.5)
         ax.set_title(f"{benchmark.upper()}: Accuracy by Model & Aggressiveness", fontsize=12)
         ax.set_xlabel("Aggressiveness", fontsize=11)

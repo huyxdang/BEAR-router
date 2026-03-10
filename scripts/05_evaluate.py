@@ -184,19 +184,12 @@ def main():
 
     # Baselines
     print("\n[4] Evaluating baselines...")
-    baselines = {
-        "sonnet_no_compress": ("claude-sonnet", 0.0),
-        "haiku_no_compress": ("claude-haiku", 0.0),
-        "gpt4omini_no_compress": ("gpt-4o-mini", 0.0),
-        "sonnet_agg03": ("claude-sonnet", 0.3),
-        "haiku_agg03": ("claude-haiku", 0.3),
-        "gpt4omini_agg03": ("gpt-4o-mini", 0.3),
-        "sonnet_agg06": ("claude-sonnet", 0.6),
-        "haiku_agg06": ("claude-haiku", 0.6),
-        "gpt4omini_agg06": ("gpt-4o-mini", 0.6),
-        "sonnet_agg09": ("claude-sonnet", 0.9),
-        "gpt4omini_agg09": ("gpt-4o-mini", 0.9),
-    }
+    baselines = {}
+    for model in MODELS:
+        name = model["name"]
+        for agg in [0.0, 0.3, 0.6, 0.9]:
+            key = f"{name}_agg{agg:.0f}" if agg == 0.0 else f"{name}_agg{int(agg*10):02d}"
+            baselines[key] = (name, agg)
 
     print(f"\n  {'Strategy':<28s} {'F1':>6s} {'Cost':>10s}")
     print("  " + "-" * 48)
@@ -212,8 +205,9 @@ def main():
     router_curve = compute_deferral_curve(df_test, cluster_stats, metric)
 
     # Deferral curve for router restricted to cheaper models only
+    cheap_models = ["claude-haiku", "gpt-4o-mini", "gpt-4.1-nano"]
     router_curve_cheap = compute_deferral_curve(
-        df_test, cluster_stats, metric, models=["claude-haiku", "gpt-4o-mini"]
+        df_test, cluster_stats, metric, models=cheap_models
     )
 
     # AUC
@@ -224,17 +218,16 @@ def main():
     print(f"  Router AUC (cheap models):  {auc_router_cheap:.6f}")
 
     # QNC — minimum cost to match best no-compression baseline
-    best_no_compress = max(
-        baseline_results["sonnet_no_compress"]["accuracy"],
-        baseline_results["gpt4omini_no_compress"]["accuracy"],
-    )
+    no_compress_keys = [k for k, (m, a) in baselines.items() if a == 0.0]
+    best_no_compress = max(baseline_results[k]["accuracy"] for k in no_compress_keys)
+    best_no_compress_key = max(no_compress_keys, key=lambda k: baseline_results[k]["accuracy"])
     qnc = compute_qnc(router_curve, best_no_compress)
-    best_baseline_cost = baseline_results["sonnet_no_compress"]["cost"]
+    best_baseline_cost = baseline_results[best_no_compress_key]["cost"]
 
     print(f"\n  Best no-compression F1:     {best_no_compress:.3f}")
     if qnc is not None:
         print(f"  QNC (router cost to match): ${qnc:.6f}")
-        print(f"  Best model cost (sonnet):   ${best_baseline_cost:.6f}")
+        print(f"  Best model cost ({best_no_compress_key}): ${best_baseline_cost:.6f}")
         if best_baseline_cost > 0:
             savings = (1 - qnc / best_baseline_cost) * 100
             print(f"  Cost reduction:             {savings:.1f}%")
@@ -249,6 +242,35 @@ def main():
         # Find what the router picks at this λ
         sample = evaluate_router(df_test, cluster_stats, row["lambda"], metric)
         print(f"  {row['lambda']:>8.1f} {row['accuracy']:>6.3f} ${row['cost']:>9.6f}")
+
+    # Per-benchmark breakdown
+    print("\n[6b] Per-benchmark breakdown...")
+    benchmarks = df_test["benchmark"].unique()
+    benchmark_results = {}
+    for bench in sorted(benchmarks):
+        df_bench = df_test[df_test["benchmark"] == bench]
+        df_train_bench = df_train[df_train["benchmark"] == bench]
+        cs_bench = build_cluster_stats(df_train_bench)
+
+        print(f"\n  --- {bench} ({df_bench['prompt_id'].nunique()} test prompts) ---")
+        print(f"  {'Strategy':<28s} {'Acc':>6s} {'Cost':>10s}")
+        print("  " + "-" * 48)
+
+        bench_baselines = {}
+        for name, (model, agg) in baselines.items():
+            result = evaluate_fixed_strategy(df_bench, model, agg, metric)
+            bench_baselines[name] = result
+            if result["count"] > 0:
+                print(f"  {name:<28s} {result['accuracy']:>6.3f} ${result['cost']:>9.6f}")
+
+        # Router at a few key λ values
+        print(f"  {'':28s}")
+        for lam in [0, 1, 10, 100, 500]:
+            r = evaluate_router(df_bench, cs_bench, lam, metric)
+            if r["count"] > 0:
+                print(f"  {'router λ=' + str(lam):<28s} {r['accuracy']:>6.3f} ${r['cost']:>9.6f}")
+
+        benchmark_results[bench] = bench_baselines
 
     # Save results
     print("\n[7] Saving evaluation results...")
