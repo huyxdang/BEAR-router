@@ -16,6 +16,8 @@ matplotlib.use("Agg")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config import RESULTS_DIR
+from router.clustering import compute_cluster_stats_minimal
+from router.scoring import score_candidates
 
 PLOTS_DIR = os.path.join(str(RESULTS_DIR), "plots")
 GRID_PATH = os.path.join(str(RESULTS_DIR), "grid_results_clustered.parquet")
@@ -192,20 +194,14 @@ def plot_4_routing_heatmap(df):
     """Heatmap: best (model, agg) per cluster at different λ values."""
     lambda_values = [0, 1, 10, 100, 500, 1000]
 
-    cluster_stats = df.groupby(["cluster_id", "model_name", "aggressiveness"]).agg(
-        mean_judge=("llm_judge_correct", "mean"),
-        mean_cost=("total_cost_usd", "mean"),
-    ).reset_index()
+    cluster_stats = compute_cluster_stats_minimal(df)
 
     n_clusters = df["cluster_id"].nunique()
     clusters = sorted(df["cluster_id"].unique())
 
-    # Build a matrix: rows=clusters, cols=lambda values
-    # Value = encoded (model, agg) choice
     all_models = sorted(df["model_name"].unique())
     all_aggs = sorted(df["aggressiveness"].unique())
 
-    # Create encoding: each unique (model, agg) gets a number
     combos = [(m, a) for m in all_models for a in all_aggs]
     combo_to_idx = {c: i for i, c in enumerate(combos)}
 
@@ -215,8 +211,9 @@ def plot_4_routing_heatmap(df):
     for j, lam in enumerate(lambda_values):
         for i, cid in enumerate(clusters):
             candidates = cluster_stats[cluster_stats["cluster_id"] == cid].copy()
-            candidates["score"] = (1 - candidates["mean_judge"]) + lam * candidates["mean_cost"]
-            best = candidates.loc[candidates["score"].idxmin()]
+            if len(candidates) == 0:
+                continue
+            best = score_candidates(candidates, lam)
             choice = (best["model_name"], best["aggressiveness"])
             matrix[i, j] = combo_to_idx.get(choice, 0)
             labels[i][j] = f"{best['model_name'][:6]}\n{best['aggressiveness']}"

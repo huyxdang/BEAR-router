@@ -17,7 +17,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import OPENAI_API_KEY, RESULTS_DIR, BENCHMARKS, DATA_DIR, JUDGE_MODEL
+from config import OPENAI_API_KEY, RESULTS_DIR, JUDGE_MODEL
+from router.data import load_ground_truths
+from router.evaluate import JUDGE_PROMPT, parse_judge_verdict
 
 import openai
 
@@ -25,28 +27,6 @@ GRID_PATH = os.path.join(str(RESULTS_DIR), "grid_results.parquet")
 BATCH_INPUT_PATH = os.path.join(str(RESULTS_DIR), "judge_batch_input.jsonl")
 BATCH_META_PATH = os.path.join(str(RESULTS_DIR), "judge_batch_meta.json")
 OUTPUT_PATH = os.path.join(str(RESULTS_DIR), "grid_results_judged.parquet")
-
-JUDGE_PROMPT = """You are an evaluation judge. Determine if the response correctly answers the question.
-
-Ground truth answer: {ground_truth}
-
-Model response: {response}
-
-Is the model's response correct? It doesn't need to match exactly — it just needs to contain or convey the same answer as the ground truth.
-
-Reply with ONLY "correct" or "incorrect"."""
-
-
-def load_ground_truths() -> dict:
-    gt_map = {}
-    for bench in BENCHMARKS:
-        path = os.path.join(str(DATA_DIR), f"{bench}_subset.json")
-        if not os.path.exists(path):
-            continue
-        with open(path) as f:
-            for p in json.load(f):
-                gt_map[p["id"]] = p["ground_truth"]
-    return gt_map
 
 
 def _merge_existing_judgments(df: pd.DataFrame) -> pd.DataFrame:
@@ -202,11 +182,8 @@ def download():
 
         if result["response"]["status_code"] == 200:
             body = result["response"]["body"]
-            text = body["choices"][0]["message"]["content"].strip().lower()
-            if "correct" in text and "incorrect" not in text:
-                verdicts[idx] = "correct"
-            else:
-                verdicts[idx] = "incorrect"
+            text = body["choices"][0]["message"]["content"]
+            verdicts[idx] = parse_judge_verdict(text)
         else:
             verdicts[idx] = None
 

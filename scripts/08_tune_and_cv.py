@@ -9,92 +9,24 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from sentence_transformers import SentenceTransformer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import EMBEDDING_MODEL, MODELS, AGGRESSIVENESS_LEVELS
+from config import K_VALUES, RESULTS_DIR, RANDOM_SEED
+from router.data import load_prompts
+from router.embeddings import embed_and_cache
+from router.clustering import compute_cluster_stats_minimal
+from router.scoring import evaluate_router, compute_auc, LAMBDA_VALUES
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
-GRID_PATH = os.path.join(RESULTS_DIR, "grid_results_judged.parquet")
+GRID_PATH = os.path.join(str(RESULTS_DIR), "grid_results_judged.parquet")
 
-K_VALUES = [5, 10, 15, 20, 30]
 N_FOLDS = 5
-RANDOM_SEED = 42
-METRIC = "llm_judge_correct"
 
-# Representative λ values: quality-focused, balanced, cost-focused
+# Representative lambda values for quick evaluation
 LAMBDA_SAMPLES = [0, 10, 100, 500]
 
-LAMBDA_CURVE = np.concatenate([
-    np.arange(0, 10, 0.5),
-    np.arange(10, 100, 5),
-    np.arange(100, 1001, 50),
-])
 
-
-def load_prompts():
-    prompts = []
-    for filename in ["squad2_subset.json", "finqa_subset.json"]:
-        with open(os.path.join(DATA_DIR, filename)) as f:
-            prompts.extend(json.load(f))
-    return prompts
-
-
-def build_cluster_stats(df_train):
-    return df_train.groupby(["cluster_id", "model_name", "aggressiveness"]).agg(
-        mean_judge=("llm_judge_correct", "mean"),
-        mean_cost=("total_cost_usd", "mean"),
-    ).reset_index()
-
-
-def evaluate_router_at_lambda(df_test, cluster_stats, lambda_):
-    metric_col = "mean_judge"
-    models = cluster_stats["model_name"].unique().tolist()
-
-    accuracies = []
-    costs = []
-
-    for prompt_id in df_test["prompt_id"].unique():
-        prompt_rows = df_test[df_test["prompt_id"] == prompt_id]
-        cluster_id = prompt_rows["cluster_id"].iloc[0]
-
-        candidates = cluster_stats[
-            (cluster_stats["cluster_id"] == cluster_id) &
-            (cluster_stats["model_name"].isin(models))
-        ].copy()
-
-        if len(candidates) == 0:
-            continue
-
-        candidates["score"] = (1 - candidates[metric_col]) + lambda_ * candidates["mean_cost"]
-        best = candidates.loc[candidates["score"].idxmin()]
-
-        actual = prompt_rows[
-            (prompt_rows["model_name"] == best["model_name"]) &
-            (prompt_rows["aggressiveness"] == best["aggressiveness"])
-        ]
-        if len(actual) == 0:
-            continue
-
-        accuracies.append(actual[METRIC].iloc[0])
-        costs.append(actual["total_cost_usd"].iloc[0])
-
-    return {
-        "accuracy": np.mean(accuracies) if accuracies else 0.0,
-        "cost": np.mean(costs) if costs else 0.0,
-    }
-
-
-def compute_auc(curve):
-    curve = curve.sort_values("cost").drop_duplicates(subset="cost", keep="last")
-    if len(curve) < 2:
-        return 0.0
-    return float(np.trapezoid(curve["accuracy"], curve["cost"]))
-
-
-def run_fold(df, prompt_ids, train_ids, test_ids, embeddings_map, k):
+def run_fold(df, train_ids, test_ids, embeddings_map, k):
     """Run one fold: cluster train prompts, evaluate on test."""
     df_train = df[df["prompt_id"].isin(train_ids)]
     df_test = df[df["prompt_id"].isin(test_ids)]
@@ -117,18 +49,18 @@ def run_fold(df, prompt_ids, train_ids, test_ids, embeddings_map, k):
     df_test["cluster_id"] = df_test["prompt_id"].map(test_cluster_map)
 
     # Build cluster stats from train
-    cluster_stats = build_cluster_stats(df_train)
+    cluster_stats = compute_cluster_stats_minimal(df_train)
 
-    # Evaluate at sample λ values
+    # Evaluate at sample lambda values
     fold_results = {}
     for lam in LAMBDA_SAMPLES:
-        result = evaluate_router_at_lambda(df_test, cluster_stats, lam)
+        result = evaluate_router(df_test, cluster_stats, lam)
         fold_results[lam] = result
 
     # Compute AUC from full deferral curve
     curve_points = []
-    for lam in LAMBDA_CURVE:
-        r = evaluate_router_at_lambda(df_test, cluster_stats, lam)
+    for lam in LAMBDA_VALUES:
+        r = evaluate_router(df_test, cluster_stats, lam)
         curve_points.append({"cost": r["cost"], "accuracy": r["accuracy"]})
     auc = compute_auc(pd.DataFrame(curve_points))
     fold_results["auc"] = auc
@@ -147,15 +79,13 @@ def main():
     df["llm_judge_correct"] = (df["llm_judge"] == "correct").astype(float)
     print(f"  {len(df)} records, {df['prompt_id'].nunique()} prompts")
 
-    # Embed all prompts
-    print(f"\n[2] Embedding prompts with {EMBEDDING_MODEL}...")
+    # Embed all prompts (uses cache)
+    print(f"\n[2] Embedding prompts...")
     prompts = load_prompts()
-    prompt_texts = {p["id"]: p["text"] for p in prompts}
-    prompt_ids = list(prompt_texts.keys())
+    prompt_ids = [p["id"] for p in prompts]
+    prompt_texts = [p["text"] for p in prompts]
 
-    embedder = SentenceTransformer(EMBEDDING_MODEL)
-    texts = [prompt_texts[pid] for pid in prompt_ids]
-    embeddings = embedder.encode(texts, show_progress_bar=True)
+    embeddings = embed_and_cache(prompt_ids, prompt_texts)
     embeddings_map = dict(zip(prompt_ids, embeddings))
 
     # Create CV folds
@@ -180,21 +110,20 @@ def main():
             test_ids = list(folds[fold_idx])
             train_ids = [pid for i, f in enumerate(folds) for pid in f if i != fold_idx]
 
-            result = run_fold(df, prompt_ids, train_ids, test_ids, embeddings_map, k)
+            result = run_fold(df, train_ids, test_ids, embeddings_map, k)
             fold_results.append(result)
 
-            # Print fold summary
             lam0 = result[0]
-            print(f"    Fold {fold_idx+1}: λ=0 acc={lam0['accuracy']:.3f} | AUC={result['auc']:.6f}")
+            print(f"    Fold {fold_idx+1}: lambda=0 acc={lam0['accuracy']:.3f} | AUC={result['auc']:.6f}")
 
         # Aggregate across folds
         k_summary = {"k": k}
         for lam in LAMBDA_SAMPLES:
             accs = [fr[lam]["accuracy"] for fr in fold_results]
             costs = [fr[lam]["cost"] for fr in fold_results]
-            k_summary[f"λ={lam}_acc_mean"] = np.mean(accs)
-            k_summary[f"λ={lam}_acc_std"] = np.std(accs)
-            k_summary[f"λ={lam}_cost_mean"] = np.mean(costs)
+            k_summary[f"lambda={lam}_acc_mean"] = np.mean(accs)
+            k_summary[f"lambda={lam}_acc_std"] = np.std(accs)
+            k_summary[f"lambda={lam}_cost_mean"] = np.mean(costs)
 
         aucs = [fr["auc"] for fr in fold_results]
         k_summary["auc_mean"] = np.mean(aucs)
@@ -204,34 +133,26 @@ def main():
 
         print(f"\n    Summary for K={k}:")
         for lam in LAMBDA_SAMPLES:
-            acc_m = k_summary[f"λ={lam}_acc_mean"]
-            acc_s = k_summary[f"λ={lam}_acc_std"]
-            cost_m = k_summary[f"λ={lam}_cost_mean"]
-            print(f"      λ={lam:<4d}  acc={acc_m:.3f}±{acc_s:.3f}  cost=${cost_m:.6f}")
-        print(f"      AUC={k_summary['auc_mean']:.6f}±{k_summary['auc_std']:.6f}")
+            acc_m = k_summary[f"lambda={lam}_acc_mean"]
+            acc_s = k_summary[f"lambda={lam}_acc_std"]
+            cost_m = k_summary[f"lambda={lam}_cost_mean"]
+            print(f"      lambda={lam:<4d}  acc={acc_m:.3f}+/-{acc_s:.3f}  cost=${cost_m:.6f}")
+        print(f"      AUC={k_summary['auc_mean']:.6f}+/-{k_summary['auc_std']:.6f}")
 
     # Final comparison
     print(f"\n\n{'='*80}")
     print("FINAL COMPARISON")
     print("=" * 80)
 
-    header = f"  {'K':>3s}"
-    for lam in LAMBDA_SAMPLES:
-        header += f"  {'λ='+str(lam)+' acc':>14s}"
-    header += f"  {'AUC':>18s}"
-    print(header)
-    print("  " + "-" * (len(header) - 2))
-
     best_k = None
     best_auc = -1
 
     for k in K_VALUES:
         s = all_results[k]
-        row = f"  {k:>3d}"
+        row = f"  K={k:>3d}"
         for lam in LAMBDA_SAMPLES:
-            row += f"  {s[f'λ={lam}_acc_mean']:.3f}±{s[f'λ={lam}_acc_std']:.3f}"
-
-        row += f"  {s['auc_mean']:.6f}±{s['auc_std']:.6f}"
+            row += f"  lambda={lam} acc={s[f'lambda={lam}_acc_mean']:.3f}+/-{s[f'lambda={lam}_acc_std']:.3f}"
+        row += f"  AUC={s['auc_mean']:.6f}+/-{s['auc_std']:.6f}"
         print(row)
 
         if s["auc_mean"] > best_auc:
@@ -241,7 +162,7 @@ def main():
     print(f"\n  Best K by AUC: K={best_k} (AUC={best_auc:.6f})")
 
     # Save results
-    results_path = os.path.join(RESULTS_DIR, "k_tuning_cv.json")
+    results_path = os.path.join(str(RESULTS_DIR), "k_tuning_cv.json")
     with open(results_path, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
     print(f"  Saved to {results_path}")

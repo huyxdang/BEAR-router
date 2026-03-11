@@ -37,15 +37,8 @@ RATE_LIMIT_DELAY = 30  # seconds to wait on 429
 
 def load_prompts() -> list[dict]:
     """Load all benchmark prompts."""
-    prompts = []
-    for bench in BENCHMARKS:
-        path = os.path.join(str(DATA_DIR), f"{bench}_subset.json")
-        if not os.path.exists(path):
-            print(f"  WARNING: {path} not found, skipping")
-            continue
-        with open(path) as f:
-            prompts.extend(json.load(f))
-    return prompts
+    from router.data import load_prompts as _load
+    return _load()
 
 
 def load_existing_results() -> tuple[list[dict], set]:

@@ -1,15 +1,15 @@
 """Quick smoke test: run a small subset through the full pipeline to confirm everything works."""
 
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import MODELS, AGGRESSIVENESS_LEVELS, DATA_DIR, BENCHMARKS, SYSTEM_PROMPTS, DEFAULT_SYSTEM_PROMPT
+from config import MODELS, AGGRESSIVENESS_LEVELS, SYSTEM_PROMPTS, DEFAULT_SYSTEM_PROMPT
 from router.compress import compress
 from router.llm import call_llm
 from router.evaluate import compute_cost
+from router.data import load_prompts as _load_prompts
 
 # Smoke test settings
 PROMPTS_PER_BENCHMARK = 1
@@ -18,16 +18,15 @@ SMOKE_AGG_LEVELS = [AGGRESSIVENESS_LEVELS[0], AGGRESSIVENESS_LEVELS[-1]]
 
 def load_prompts(n: int) -> list[dict]:
     """Load first n prompts from each available benchmark."""
-    prompts = []
-    for bench in BENCHMARKS:
-        path = os.path.join(str(DATA_DIR), f"{bench}_subset.json")
-        if not os.path.exists(path):
-            print(f"  SKIP: {path} not found")
-            continue
-        with open(path) as f:
-            data = json.load(f)
-        prompts.extend(data[:n])
-    return prompts
+    all_prompts = _load_prompts()
+    # Group by benchmark, take first n from each
+    by_bench = {}
+    for p in all_prompts:
+        by_bench.setdefault(p["benchmark"], []).append(p)
+    result = []
+    for prompts in by_bench.values():
+        result.extend(prompts[:n])
+    return result
 
 
 def main():

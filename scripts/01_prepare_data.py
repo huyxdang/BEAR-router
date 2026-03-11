@@ -21,7 +21,8 @@ def load_squad2(n: int) -> list[dict]:
     ds = load_dataset("rajpurkar/squad_v2", split="validation")
 
     random.seed(RANDOM_SEED)
-    sampled = random.sample(list(ds), min(n, len(ds)))
+    indices = random.sample(range(len(ds)), min(n, len(ds)))
+    sampled = [ds[i] for i in indices]
 
     prompts = []
     for i, ex in enumerate(sampled):
@@ -60,12 +61,14 @@ def load_finqa(n: int) -> list[dict]:
     for i, ex in enumerate(sampled):
         context = ex["context"]
         question = ex["question"]
+        ground_truth = ex["answer"]
         prompt_text = f"Context: {context}\n\nQuestion: {question}\n\nAnswer:"
+
         prompts.append({
             "id": f"finqa_{i:03d}",
             "benchmark": "finqa",
             "text": prompt_text,
-            "ground_truth": ex["answer"],
+            "ground_truth": ground_truth,
             "context": context,
             "question": question,
         })
@@ -76,41 +79,43 @@ def load_finqa(n: int) -> list[dict]:
 def load_coqa(n: int) -> list[dict]:
     """Load n questions from CoQA, flattening multi-turn conversations into individual prompts.
 
-    Each turn becomes its own prompt with the conversation history included.
+    Each turn becomes its own prompt with conversation history included.
+    Prompt format matches TTC's run_benchmark.py — only the story gets compressed,
+    conversation history stays intact.
     """
-    ds = load_dataset("stanfordnlp/coqa", split="train")
+    ds = load_dataset("stanfordnlp/coqa", split="validation")
 
     random.seed(RANDOM_SEED + 4)
-    sampled = random.sample(list(ds), min(n * 2, len(ds)))  # oversample since we flatten
+    indices = random.sample(range(len(ds)), min(n * 2, len(ds)))  # oversample since we flatten
+    sampled = [ds[i] for i in indices]
 
     prompts = []
     for ex in sampled:
-        context = ex["story"]
+        story = ex["story"].strip()
         questions = ex["questions"]
         answers = ex["answers"]["input_text"]
 
         for turn_idx in range(len(questions)):
-            # Build conversation history from prior turns
-            history = ""
-            for prev in range(turn_idx):
-                history += f"Q: {questions[prev]}\nA: {answers[prev]}\n"
+            # Build conversation history (numbered, matching TTC format)
+            parts = [f"Story:\n{story}"]
+
+            if turn_idx > 0:
+                history = []
+                for prev in range(turn_idx):
+                    history.append(f"Q{prev + 1}: {questions[prev]}")
+                    history.append(f"A{prev + 1}: {answers[prev]}")
+                parts.append("Conversation so far:\n" + "\n".join(history))
 
             current_q = questions[turn_idx]
-            if history:
-                prompt_text = (
-                    f"Context: {context}\n\n"
-                    f"Conversation history:\n{history}\n"
-                    f"Question: {current_q}\n\nAnswer:"
-                )
-            else:
-                prompt_text = f"Context: {context}\n\nQuestion: {current_q}\n\nAnswer:"
+            parts.append(f"Current question: {current_q}")
+            prompt_text = "\n\n".join(parts)
 
             prompts.append({
                 "id": f"coqa_{len(prompts):04d}",
                 "benchmark": "coqa",
                 "text": prompt_text,
                 "ground_truth": answers[turn_idx],
-                "context": context,
+                "context": story,  # story only — this is what gets compressed
                 "question": current_q,
             })
 
@@ -124,7 +129,9 @@ def load_coqa(n: int) -> list[dict]:
 
 
 def load_financebench() -> list[dict]:
-    """Load all 150 FinanceBench samples (benchmark-only, not used for training).
+    """Load all 150 FinanceBench samples 
+    
+    Only used for benchmark, NOT for training
 
     Uses evidence_text as context since the dataset references SEC filings.
     """

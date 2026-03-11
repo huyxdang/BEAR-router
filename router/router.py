@@ -1,31 +1,43 @@
-"""Adaptive compression router: embed → cluster → route to optimal (model, agg)."""
+"""Adaptive compression router: embed -> cluster -> route to optimal (model, agg)."""
 
-import pickle
+import json
+import os
 
 import numpy as np
-import openai
+import pandas as pd
+from sklearn.cluster import KMeans
 
-from config import OPENAI_API_KEY, EMBEDDING_MODEL
+from router.embeddings import embed_single, embed_texts
+from router.scoring import score_candidates
 
 
 class Router:
-    """Routes prompts to optimal (model, aggressiveness) pairs based on cluster stats."""
+    """Routes prompts to optimal (model, aggressiveness) pairs based on cluster stats.
 
-    def __init__(self, router_path: str):
-        with open(router_path, "rb") as f:
-            data = pickle.load(f)
+    Loads from portable artifacts (JSON + npy + parquet), not pickle.
+    """
 
-        self.kmeans = data["kmeans"]
-        self.cluster_stats = data["cluster_stats"]
-        self.models_available = data["models_available"]
-        self.agg_levels = data["agg_levels"]
-        self._client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    def __init__(self, router_dir: str):
+        """Load router from a directory containing router_config.json, centroids.npy,
+        and cluster_stats.parquet.
+        """
+        # Load config
+        with open(os.path.join(router_dir, "router_config.json")) as f:
+            config = json.load(f)
+        self.models_available = config["models_available"]
+        self.agg_levels = config["agg_levels"]
+        n_clusters = config["n_clusters"]
 
-    def embed(self, text: str) -> np.ndarray:
-        response = self._client.embeddings.create(
-            model=EMBEDDING_MODEL, input=[text]
+        # Reconstruct KMeans from centroids
+        centroids = np.load(os.path.join(router_dir, "centroids.npy"))
+        self.kmeans = KMeans(n_clusters=n_clusters)
+        self.kmeans.cluster_centers_ = centroids
+        self.kmeans._n_threads = 1
+
+        # Load cluster stats
+        self.cluster_stats = pd.read_parquet(
+            os.path.join(router_dir, "cluster_stats.parquet")
         )
-        return np.array(response.data[0].embedding)
 
     def route(self, prompt: str, user_config: dict | None = None) -> dict:
         """Route a prompt to the optimal (model, aggressiveness).
@@ -40,77 +52,30 @@ class Router:
         if user_config is None:
             user_config = {}
 
-        # 1. Embed and find nearest cluster
-        embedding = self.embed(prompt)
+        embedding = embed_single(prompt)
         cluster_id = int(self.kmeans.predict(embedding.reshape(1, -1))[0])
-
-        # 2. Get stats for this cluster
-        stats = self.cluster_stats
-        candidates = stats[stats["cluster_id"] == cluster_id].copy()
-
-        # 3. Filter by user constraints
-        models = user_config.get("models", self.models_available)
-        candidates = candidates[candidates["model_name"].isin(models)]
-
-        min_agg = user_config.get("min_aggressiveness", min(self.agg_levels))
-        max_agg = user_config.get("max_aggressiveness", max(self.agg_levels))
-        candidates = candidates[
-            (candidates["aggressiveness"] >= min_agg) &
-            (candidates["aggressiveness"] <= max_agg)
-        ]
-
-        if "max_cost_per_request" in user_config:
-            candidates = candidates[
-                candidates["mean_cost"] <= user_config["max_cost_per_request"]
-            ]
-
-        if len(candidates) == 0:
-            return {"error": "No valid (model, aggressiveness) pair satisfies all constraints"}
-
-        # 4. Score: minimize error + λ * cost
-        lam = user_config.get("lambda_", 1.0)
-
-        candidates = candidates.copy()
-        candidates["score"] = (1 - candidates["mean_judge"]) + lam * candidates["mean_cost"]
-
-        # 5. Pick the best
-        best = candidates.loc[candidates["score"].idxmin()]
-
-        return {
-            "model": best["model_name"],
-            "aggressiveness": float(best["aggressiveness"]),
-            "expected_accuracy": float(best["mean_judge"]),
-            "expected_cost": float(best["mean_cost"]),
-            "expected_latency": float(best["mean_latency"]),
-            "cluster_id": cluster_id,
-            "score": float(best["score"]),
-        }
+        return self._route_by_cluster(cluster_id, user_config)
 
     def route_batch(self, prompts: list[str], user_config: dict | None = None) -> list[dict]:
         """Route multiple prompts."""
         if user_config is None:
             user_config = {}
 
-        # Batch embed
-        response = self._client.embeddings.create(
-            model=EMBEDDING_MODEL, input=prompts
-        )
-        embeddings = np.array([e.embedding for e in response.data])
+        embeddings = embed_texts(prompts)
         cluster_ids = self.kmeans.predict(embeddings)
 
-        results = []
-        for i, prompt in enumerate(prompts):
-            cluster_id = int(cluster_ids[i])
-            result = self._route_by_cluster(cluster_id, user_config)
-            results.append(result)
-
-        return results
+        return [
+            self._route_by_cluster(int(cid), user_config)
+            for cid in cluster_ids
+        ]
 
     def _route_by_cluster(self, cluster_id: int, user_config: dict) -> dict:
         """Route given a known cluster ID (avoids re-embedding)."""
-        stats = self.cluster_stats
-        candidates = stats[stats["cluster_id"] == cluster_id].copy()
+        candidates = self.cluster_stats[
+            self.cluster_stats["cluster_id"] == cluster_id
+        ].copy()
 
+        # Filter by user constraints
         models = user_config.get("models", self.models_available)
         candidates = candidates[candidates["model_name"].isin(models)]
 
@@ -130,11 +95,7 @@ class Router:
             return {"error": "No valid (model, aggressiveness) pair satisfies all constraints"}
 
         lam = user_config.get("lambda_", 1.0)
-
-        candidates = candidates.copy()
-        candidates["score"] = (1 - candidates["mean_judge"]) + lam * candidates["mean_cost"]
-
-        best = candidates.loc[candidates["score"].idxmin()]
+        best = score_candidates(candidates, lam)
 
         return {
             "model": best["model_name"],
