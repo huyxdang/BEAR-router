@@ -3,7 +3,9 @@
 import pickle
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import openai
+
+from config import OPENAI_API_KEY, EMBEDDING_MODEL
 
 
 class Router:
@@ -17,10 +19,13 @@ class Router:
         self.cluster_stats = data["cluster_stats"]
         self.models_available = data["models_available"]
         self.agg_levels = data["agg_levels"]
-        self.embedder = SentenceTransformer(data["embedder_name"])
+        self._client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
     def embed(self, text: str) -> np.ndarray:
-        return self.embedder.encode([text])[0]
+        response = self._client.embeddings.create(
+            model=EMBEDDING_MODEL, input=[text]
+        )
+        return np.array(response.data[0].embedding)
 
     def route(self, prompt: str, user_config: dict | None = None) -> dict:
         """Route a prompt to the optimal (model, aggressiveness).
@@ -31,7 +36,6 @@ class Router:
             min_aggressiveness: float    — compression floor
             max_aggressiveness: float    — compression ceiling
             lambda_: float              — cost-quality tradeoff (default 1.0)
-            metric: str                 — "f1", "ca", or "em" (default "f1")
         """
         if user_config is None:
             user_config = {}
@@ -64,12 +68,10 @@ class Router:
             return {"error": "No valid (model, aggressiveness) pair satisfies all constraints"}
 
         # 4. Score: minimize error + λ * cost
-        metric = user_config.get("metric", "f1")
-        metric_col = {"f1": "mean_f1", "ca": "mean_ca", "em": "mean_em", "judge": "mean_judge"}[metric]
         lam = user_config.get("lambda_", 1.0)
 
         candidates = candidates.copy()
-        candidates["score"] = (1 - candidates[metric_col]) + lam * candidates["mean_cost"]
+        candidates["score"] = (1 - candidates["mean_judge"]) + lam * candidates["mean_cost"]
 
         # 5. Pick the best
         best = candidates.loc[candidates["score"].idxmin()]
@@ -77,8 +79,7 @@ class Router:
         return {
             "model": best["model_name"],
             "aggressiveness": float(best["aggressiveness"]),
-            "expected_f1": float(best["mean_f1"]),
-            "expected_ca": float(best["mean_ca"]),
+            "expected_accuracy": float(best["mean_judge"]),
             "expected_cost": float(best["mean_cost"]),
             "expected_latency": float(best["mean_latency"]),
             "cluster_id": cluster_id,
@@ -90,13 +91,16 @@ class Router:
         if user_config is None:
             user_config = {}
 
-        embeddings = self.embedder.encode(prompts)
+        # Batch embed
+        response = self._client.embeddings.create(
+            model=EMBEDDING_MODEL, input=prompts
+        )
+        embeddings = np.array([e.embedding for e in response.data])
         cluster_ids = self.kmeans.predict(embeddings)
 
         results = []
         for i, prompt in enumerate(prompts):
             cluster_id = int(cluster_ids[i])
-            # Use the same logic but skip re-embedding
             result = self._route_by_cluster(cluster_id, user_config)
             results.append(result)
 
@@ -125,20 +129,17 @@ class Router:
         if len(candidates) == 0:
             return {"error": "No valid (model, aggressiveness) pair satisfies all constraints"}
 
-        metric = user_config.get("metric", "f1")
-        metric_col = {"f1": "mean_f1", "ca": "mean_ca", "em": "mean_em", "judge": "mean_judge"}[metric]
         lam = user_config.get("lambda_", 1.0)
 
         candidates = candidates.copy()
-        candidates["score"] = (1 - candidates[metric_col]) + lam * candidates["mean_cost"]
+        candidates["score"] = (1 - candidates["mean_judge"]) + lam * candidates["mean_cost"]
 
         best = candidates.loc[candidates["score"].idxmin()]
 
         return {
             "model": best["model_name"],
             "aggressiveness": float(best["aggressiveness"]),
-            "expected_f1": float(best["mean_f1"]),
-            "expected_ca": float(best["mean_ca"]),
+            "expected_accuracy": float(best["mean_judge"]),
             "expected_cost": float(best["mean_cost"]),
             "expected_latency": float(best["mean_latency"]),
             "cluster_id": cluster_id,

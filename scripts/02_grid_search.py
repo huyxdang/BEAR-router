@@ -16,31 +16,33 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import MODELS, AGGRESSIVENESS_LEVELS
+from config import (
+    MODELS, AGGRESSIVENESS_LEVELS, BENCHMARKS,
+    DATA_DIR, RESULTS_DIR, BATCH_SIZE, CHECKPOINT_EVERY,
+    SYSTEM_PROMPTS, DEFAULT_SYSTEM_PROMPT,
+)
 from router.compress import compress
 from router.llm import call_llm_async
-from router.evaluate import exact_match, f1_score, contains_answer, compute_cost
+from router.evaluate import compute_cost
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
-
-RESULTS_PATH = os.path.join(RESULTS_DIR, "grid_results.parquet")
-CHECKPOINT_PATH = os.path.join(RESULTS_DIR, "grid_results_checkpoint.parquet")
-COMPRESS_CACHE_PATH = os.path.join(RESULTS_DIR, "compressed_cache.json")
+RESULTS_PATH = os.path.join(str(RESULTS_DIR), "grid_results.parquet")
+CHECKPOINT_PATH = os.path.join(str(RESULTS_DIR), "grid_results_checkpoint.parquet")
+COMPRESS_CACHE_PATH = os.path.join(str(RESULTS_DIR), "compressed_cache.json")
 
 TRIAL_ID = "run_001"
-BATCH_SIZE = 10  # concurrent LLM calls
 MAX_RETRIES = 5
 RETRY_DELAY = 5  # seconds
 RATE_LIMIT_DELAY = 30  # seconds to wait on 429
-CHECKPOINT_EVERY = 50  # save after this many successful calls
 
 
 def load_prompts() -> list[dict]:
     """Load all benchmark prompts."""
     prompts = []
-    for filename in ["squad2_subset.json", "finqa_subset.json"]:
-        path = os.path.join(DATA_DIR, filename)
+    for bench in BENCHMARKS:
+        path = os.path.join(str(DATA_DIR), f"{bench}_subset.json")
+        if not os.path.exists(path):
+            print(f"  WARNING: {path} not found, skipping")
+            continue
         with open(path) as f:
             prompts.extend(json.load(f))
     return prompts
@@ -91,9 +93,6 @@ def save_checkpoint(records: list[dict]):
 
 def build_record(prompt, agg, comp, model, llm_result):
     """Build a result record from all components."""
-    em = exact_match(llm_result["response_text"], prompt["ground_truth"])
-    f1 = f1_score(llm_result["response_text"], prompt["ground_truth"])
-    ca = contains_answer(llm_result["response_text"], prompt["ground_truth"])
     cost = compute_cost(
         model,
         llm_result["input_tokens"],
@@ -118,9 +117,6 @@ def build_record(prompt, agg, comp, model, llm_result):
         "llm_response": llm_result["response_text"],
         "llm_input_tokens": llm_result["input_tokens"],
         "llm_output_tokens": llm_result["output_tokens"],
-        "correct": em,
-        "f1_score": f1,
-        "contains_answer": ca,
         "input_cost_usd": cost["input_cost_usd"],
         "output_cost_usd": cost["output_cost_usd"],
         "total_llm_cost_usd": cost["total_llm_cost_usd"],
@@ -157,10 +153,11 @@ def _get_retry_after(e: Exception) -> float:
 async def process_one(prompt, agg, comp, model):
     """Process a single (prompt, agg, model) combo. Returns (combo_key, record) or (combo_key, None) on failure."""
     combo_key = (prompt["id"], agg, model["name"])
+    sys_prompt = SYSTEM_PROMPTS.get(prompt["benchmark"], DEFAULT_SYSTEM_PROMPT)
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            llm_result = await call_llm_async(model, comp["compressed_text"])
+            llm_result = await call_llm_async(model, comp["compressed_text"], sys_prompt)
             record = build_record(prompt, agg, comp, model, llm_result)
             return combo_key, record
         except Exception as e:
@@ -348,9 +345,10 @@ async def main():
             if combo_key in completed:
                 continue
 
+            sys_prompt = SYSTEM_PROMPTS.get(prompt["benchmark"], DEFAULT_SYSTEM_PROMPT)
             for attempt in range(MAX_RETRIES + 1):
                 try:
-                    llm_result = await call_llm_async(model, comp["compressed_text"])
+                    llm_result = await call_llm_async(model, comp["compressed_text"], sys_prompt)
                     record = build_record(prompt, agg, comp, model, llm_result)
                     records.append(record)
                     completed.add(combo_key)
