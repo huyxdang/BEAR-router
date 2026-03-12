@@ -117,7 +117,7 @@ BATCH_SIZE = 25  # concurrent LLM calls (semaphore-based)
 CHECKPOINT_EVERY = 50
 
 # ============ LLM Judge ============
-JUDGE_MODEL = "gpt-4o-mini"
+JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct" # Runs on Modal
 
 # ============ Helpers ============
 def get_model_by_name(name: str) -> dict:

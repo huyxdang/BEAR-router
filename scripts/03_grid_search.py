@@ -22,9 +22,9 @@ from config import (
     MODELS, AGGRESSIVENESS_LEVELS, BENCHMARKS,
     DATA_DIR, RESULTS_DIR, BATCH_SIZE, CHECKPOINT_EVERY,
     SYSTEM_PROMPTS, DEFAULT_SYSTEM_PROMPT,
-    TRAIN_FRACTION, VAL_FRACTION, RANDOM_SEED,
 )
 from router.compress import compress, compress_async
+from router.data import split_prompt_ids
 from router.llm import call_llm_async
 from router.evaluate import compute_cost
 
@@ -47,14 +47,9 @@ def load_prompts() -> list[dict]:
     from router.data import load_prompts as _load
     all_prompts = _load()
 
-    # Same split logic as 03_build_router.py — deterministic by seed
     prompt_ids = [p["id"] for p in all_prompts]
-    rng = np.random.RandomState(RANDOM_SEED)
-    ids = prompt_ids.copy()
-    rng.shuffle(ids)
-
-    n_train = int(len(ids) * TRAIN_FRACTION)
-    val_test_ids = set(ids[n_train:])  # everything after train
+    train_ids, val_ids, test_ids = split_prompt_ids(prompt_ids)
+    val_test_ids = set(val_ids + test_ids)
 
     prompts = [p for p in all_prompts if p["id"] in val_test_ids]
     print(f"  Filtered to val+test: {len(prompts)} / {len(all_prompts)} prompts "

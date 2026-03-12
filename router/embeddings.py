@@ -47,3 +47,27 @@ def _save_cache(prompt_ids: list[str], embeddings: np.ndarray):
     np.savez_compressed(CACHE_PATH, embeddings=embeddings)
     with open(CACHE_IDS_PATH, "w") as f:
         json.dump(prompt_ids, f)
+
+
+# Lazy-loaded local embedding model
+_model = None
+
+
+def _get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer(EMBEDDING_MODEL)
+    return _model
+
+
+def embed_single(text: str) -> np.ndarray:
+    """Encode a single string, return 1-D embedding array."""
+    model = _get_model()
+    return model.encode(text, show_progress_bar=False)
+
+
+def embed_texts(texts: list[str]) -> np.ndarray:
+    """Encode a batch of strings, return 2-D array (len(texts), dim)."""
+    model = _get_model()
+    return model.encode(texts, show_progress_bar=False)

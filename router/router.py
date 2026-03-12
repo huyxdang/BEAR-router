@@ -34,7 +34,6 @@ class Router:
         centroids = np.load(os.path.join(router_dir, "centroids.npy"))
         self.kmeans = KMeans(n_clusters=n_clusters)
         self.kmeans.cluster_centers_ = centroids
-        self.kmeans._n_threads = 1
 
         # Load cluster stats
         self.cluster_stats = pd.read_parquet(

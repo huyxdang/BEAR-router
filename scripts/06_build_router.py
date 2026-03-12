@@ -16,11 +16,8 @@ from sklearn.cluster import KMeans
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import (
-    AGGRESSIVENESS_LEVELS, MODELS,
-    RESULTS_DIR, TRAIN_FRACTION, VAL_FRACTION, RANDOM_SEED,
-)
-from router.data import load_prompts
+from config import AGGRESSIVENESS_LEVELS, MODELS, RESULTS_DIR, RANDOM_SEED
+from router.data import load_prompts, split_prompt_ids
 from router.embeddings import embed_and_cache
 from router.clustering import compute_cluster_stats
 
@@ -35,21 +32,6 @@ CLUSTER_STATS_PATH = os.path.join(str(RESULTS_DIR), "cluster_stats.parquet")
 # Offline-only (evaluation, reproducibility)
 SPLITS_PATH = os.path.join(str(RESULTS_DIR), "router_splits.json")
 EMBEDDINGS_PATH = os.path.join(str(RESULTS_DIR), "router_embeddings.npz")
-
-
-def split_prompt_ids(prompt_ids: list[str]) -> tuple[list[str], list[str], list[str]]:
-    """Split prompt IDs into train/val/test (deterministic)."""
-    rng = np.random.RandomState(RANDOM_SEED)
-    ids = prompt_ids.copy()
-    rng.shuffle(ids)
-
-    n_train = int(len(ids) * TRAIN_FRACTION)
-    n_val = int(len(ids) * VAL_FRACTION)
-
-    train_ids = ids[:n_train]
-    val_ids = ids[n_train:n_train + n_val]
-    test_ids = ids[n_train + n_val:]
-    return train_ids, val_ids, test_ids
 
 
 def main():

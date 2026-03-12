@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     MODELS, RESULTS_DIR, DATA_DIR,
     EVAL_BENCHMARKS, SYSTEM_PROMPTS, DEFAULT_SYSTEM_PROMPT,
-    BATCH_SIZE, get_model_by_name, OPENROUTER_MODEL_IDS,
+    BATCH_SIZE, get_model_by_name,
 )
 from router.data import load_prompts, load_ground_truths
 from router.clustering import compute_cluster_stats_minimal
@@ -52,87 +52,6 @@ def evaluate_fixed_strategy(df_test: pd.DataFrame, model_name: str,
         "accuracy": sub["llm_judge_correct"].mean(),
         "cost": sub["total_cost_usd"].mean(),
         "count": len(sub),
-    }
-
-
-async def evaluate_openrouter_baseline(df_test: pd.DataFrame) -> dict:
-    """Evaluate OpenRouter auto-router on test prompts (no compression).
-
-    Sends each test prompt to OpenRouter, then judges via Modal for consistency.
-    """
-    from router.llm import call_openrouter_async
-
-    # OpenRouter limits `models` array to 3; drop cheapest (nano) since
-    # OpenRouter's auto-router wouldn't pick it over the others anyway.
-    allowed_model_ids = [m["id"] for m in MODELS if "nano" not in m["id"]][:3]
-    or_to_model_config = {
-        OPENROUTER_MODEL_IDS[m["id"]]: m
-        for m in MODELS
-        if m["id"] in OPENROUTER_MODEL_IDS
-    }
-
-    prompt_lookup = {p["id"]: p["text"] for p in load_prompts()}
-    ground_truths = load_ground_truths()
-
-    test_prompt_ids = df_test["prompt_id"].unique()
-
-    # Phase 1: Call OpenRouter for all test prompts
-    print("    Calling OpenRouter API for test prompts...")
-
-    async def _call_one(pid):
-        text = prompt_lookup.get(pid)
-        if text is None:
-            return None
-        async with _api_semaphore:
-            try:
-                result = await call_openrouter_async(text, allowed_model_ids)
-                return {
-                    "prompt_id": pid,
-                    "response_text": result["response_text"],
-                    "model_used": result["model_used"],
-                    "input_tokens": result["input_tokens"],
-                    "output_tokens": result["output_tokens"],
-                    "latency": result["latency"],
-                }
-            except Exception as e:
-                print(f"    OpenRouter error for {pid}: {e}")
-                return None
-
-    tasks = [_call_one(pid) for pid in test_prompt_ids]
-    raw_results = await asyncio.gather(*tasks)
-    or_results = [r for r in raw_results if r is not None]
-
-    if not or_results:
-        return {"accuracy": 0.0, "cost": 0.0, "count": 0}
-
-    # Phase 2: Judge via Modal (consistent with grid search)
-    print(f"    Judging {len(or_results)} OpenRouter responses via Modal...")
-    gt_list = [ground_truths.get(r["prompt_id"], "") for r in or_results]
-    resp_list = [r["response_text"] for r in or_results]
-    verdicts = await judge_responses_async(gt_list, resp_list)
-
-    correct = sum(1 for v in verdicts if v == "correct")
-    total = len(or_results)
-    total_cost = 0.0
-    unknown_model_count = 0
-    for r in or_results:
-        model_used = (r.get("model_used") or "").split(":")[0]
-        model_config = or_to_model_config.get(model_used)
-        if model_config is None:
-            unknown_model_count += 1
-            continue
-        cost = compute_cost(model_config, r["input_tokens"], r["output_tokens"], tokens_removed=0)
-        total_cost += cost["total_cost_usd"]
-
-    cost_count = total - unknown_model_count
-    mean_cost = total_cost / cost_count if cost_count else 0.0
-    if unknown_model_count:
-        print(f"    WARNING: {unknown_model_count}/{total} OpenRouter responses had unknown model IDs; cost excludes them.")
-
-    return {
-        "accuracy": correct / total if total else 0.0,
-        "cost": mean_cost,
-        "count": total,
     }
 
 
@@ -291,17 +210,19 @@ async def main():
     gpt54_baseline = evaluate_fixed_strategy(df_test, "gpt-5.4", 0.0)
     print(f"  GPT-5.4 acc={gpt54_baseline['accuracy']:.3f}  cost=${gpt54_baseline['cost']:.6f}")
 
-    # ===== BASELINE 2: OpenRouter =====
-    skip_or = "--skip-openrouter" in sys.argv
-    if skip_or:
-        print("\n  --- Baseline 2: OpenRouter (SKIPPED) ---")
-        openrouter_baseline = {"accuracy": 0.0, "cost": 0.0, "count": 0}
-    else:
-        print("\n  --- Baseline 2: OpenRouter (same pool, no compression) ---")
-        openrouter_baseline = await evaluate_openrouter_baseline(df_test)
+    # ===== BASELINE 2: OpenRouter (run separately via 07b_eval_openrouter.py) =====
+    # Load existing OpenRouter results if available
+    or_results_path = os.path.join(str(RESULTS_DIR), "openrouter_results.json")
+    if os.path.exists(or_results_path):
+        with open(or_results_path) as f:
+            openrouter_baseline = json.load(f)["summary"]
+        print(f"\n  --- Baseline 2: OpenRouter (loaded from 07b) ---")
         print(f"  OpenRouter acc={openrouter_baseline['accuracy']:.3f}  "
               f"cost=${openrouter_baseline['cost']:.6f}  "
               f"n={openrouter_baseline['count']}")
+    else:
+        print(f"\n  --- Baseline 2: OpenRouter (not yet run — use 07b_eval_openrouter.py) ---")
+        openrouter_baseline = {"accuracy": 0.0, "cost": 0.0, "count": 0}
 
     # ===== BASELINE 3: UniRoute No Compression =====
     print("\n  --- Baseline 3: UniRoute No Compression (agg=0.0 only) ---")
@@ -398,7 +319,6 @@ async def main():
             n_clusters = len(centroids)
             kmeans = KMeans(n_clusters=n_clusters)
             kmeans.cluster_centers_ = centroids
-            kmeans._n_threads = 1
 
             fb_results = await evaluate_financebench(cluster_stats, kmeans)
             eval_results["financebench"] = fb_results

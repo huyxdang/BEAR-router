@@ -1,16 +1,6 @@
-"""Cost computation and LLM judge prompt."""
+"""Cost computation helpers."""
 
 from config import BEAR_COST_PER_1M_TOKENS_REMOVED
-
-JUDGE_PROMPT = """You are an evaluation judge. Determine if the response correctly answers the question.
-
-Ground truth answer: {ground_truth}
-
-Model response: {response}
-
-Is the model's response correct? It doesn't need to match exactly — it just needs to contain or convey the same answer as the ground truth.
-
-Reply with ONLY "correct" or "incorrect"."""
 
 
 def compute_cost(model_config: dict, input_tokens: int, output_tokens: int,

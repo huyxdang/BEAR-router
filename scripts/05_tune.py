@@ -21,11 +21,8 @@ from sklearn.cluster import KMeans
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import (
-    K_VALUES, RESULTS_DIR, RANDOM_SEED,
-    TRAIN_FRACTION, VAL_FRACTION,
-)
-from router.data import load_prompts
+from config import K_VALUES, RESULTS_DIR, RANDOM_SEED
+from router.data import load_prompts, split_prompt_ids
 from router.embeddings import embed_and_cache
 from router.clustering import compute_cluster_stats_minimal
 from router.scoring import evaluate_router, compute_auc, LAMBDA_VALUES
@@ -37,21 +34,6 @@ TUNING_BEST_PATH = os.path.join(str(RESULTS_DIR), "tuning_best.json")
 N_FOLDS = 5
 SVAL_SIZES = [25, 50, 100, 200, 500]
 LAMBDA_SAMPLES = [0, 10, 100, 500]
-
-
-def split_prompt_ids(prompt_ids: list[str]) -> tuple[list[str], list[str], list[str]]:
-    """Split prompt IDs into train/val/test (deterministic)."""
-    rng = np.random.RandomState(RANDOM_SEED)
-    ids = prompt_ids.copy()
-    rng.shuffle(ids)
-
-    n_train = int(len(ids) * TRAIN_FRACTION)
-    n_val = int(len(ids) * VAL_FRACTION)
-
-    train_ids = ids[:n_train]
-    val_ids = ids[n_train:n_train + n_val]
-    test_ids = ids[n_train + n_val:]
-    return train_ids, val_ids, test_ids
 
 
 def run_fold(df, train_ids, eval_ids, embeddings_map, k, profile_ids):
