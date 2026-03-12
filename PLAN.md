@@ -24,7 +24,7 @@ Standard benchmark-based routing fails here because a model's general intelligen
 
 **Phase 1 (Offline — done once):**
 
-1. **Cluster Training Prompts:** Embed training prompts using a frozen text encoder (OpenAI `text-embedding-3-small`), then run K-means to find $K$ centroids. Training prompts only need embeddings — no model inference, no labels.
+1. **Cluster Training Prompts:** Embed training prompts using a frozen text encoder (`Qwen/Qwen3-Embedding-0.6B`, 1024d, runs locally), then run K-means to find $K$ centroids. Training prompts only need embeddings — no model inference, no labels.
 2. **Partition the Validation Set:** Assign each prompt in $S_{val}$ to its nearest centroid, forming $K$ representative clusters.
 3. **Profile Each Virtual Model:** For every Virtual Model in the pool, run it on the $S_{val}$ prompts (which have ground-truth labels) and compute its average error on each of the $K$ clusters. This produces a $K$-dimensional feature vector ($\Psi$) per Virtual Model — its "compression-tolerance fingerprint."
 

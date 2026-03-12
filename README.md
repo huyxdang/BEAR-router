@@ -14,9 +14,9 @@ Uses TTC's **bear-1.2** compression API to reduce input tokens before routing to
                           +--------+---------+
                                    |
                           +--------v---------+
-                          |  Embed (OpenAI   |
-                          |  text-embedding  |
-                          |  -3-small, 1536d)|
+                          |  Embed (Qwen3    |
+                          |  Embedding-0.6B  |
+                          |  local, 1024d)   |
                           +--------+---------+
                                    |
                           +--------v---------+
@@ -87,17 +87,13 @@ cp .env.example .env
 # Run the pipeline (in order)
 python scripts/00_check_apis.py               # Verify all API endpoints
 python scripts/01_prepare_data.py             # Download datasets from HuggingFace
-python scripts/01_validate.py                 # Smoke test (1 prompt per benchmark)
-python scripts/02_grid_search.py              # Async compression + LLM calls (val+test)
-python scripts/03_llm_judge_batch.py submit   # Submit judge jobs via OpenAI Batch API
-python scripts/03_llm_judge_batch.py status   # Check batch status
-python scripts/03_llm_judge_batch.py download # Download judge verdicts
-# Or automate all chunks end-to-end:
-python scripts/03_llm_judge_batch.py run 800 30  # chunk=800, poll every 30s
-python scripts/03_build_router.py             # Embed, cluster, build routing table
-python scripts/08_tune_and_cv.py              # K-tuning via cross-validation
-python scripts/04_evaluate.py                 # Deferral curves, AUC, QNC, FinanceBench
-python scripts/05_visualize.py                # Generate plots
+python scripts/02_validate.py                 # Smoke test (1 prompt per benchmark)
+python scripts/03_grid_search.py              # Async compression + LLM calls (val+test)
+modal run scripts/04_judge.py                 # Judge answers via Qwen2.5-7B on Modal GPU
+python scripts/05_tune.py                     # Sweep K × |S_val| via cross-validation
+python scripts/06_build_router.py             # Embed, cluster, build routing table
+python scripts/07_evaluate.py                 # Deferral curves, AUC, QNC, FinanceBench
+python scripts/08_visualize.py                # Generate plots
 ```
 
 ## Pipeline Overview
@@ -105,19 +101,19 @@ python scripts/05_visualize.py                # Generate plots
 | Step | Script | Description |
 |---|---|---|
 | 0 | `00_check_apis.py` | Verify TTC, OpenAI, Anthropic, and OpenRouter endpoints are reachable |
-| 1a | `01_prepare_data.py` | Download SQuAD 2.0, financial-qa-10K, CoQA, and FinanceBench; format as JSON |
-| 1b | `01_validate.py` | Smoke test: 1 prompt per benchmark through compress + LLM |
-| 2 | `02_grid_search.py` | Run all (prompt, compression, model) combos on val+test split; auto-resume with checkpoints |
-| 3 | `03_llm_judge_batch.py` | Judge answers via OpenAI Batch API (gpt-4o-mini); submit / status / download subcommands |
-| 4 | `03_build_router.py` | Embed prompts with text-embedding-3-small, K-means clustering, compute cluster stats |
-| 5 | `08_tune_and_cv.py` | Tune K (number of clusters) via cross-validation |
-| 6 | `04_evaluate.py` | Deferral curves, AUC, QNC metrics; FinanceBench held-out evaluation |
-| 7 | `05_visualize.py` | Generate all plots (heatmaps, deferral curves, cost-quality tradeoffs) |
+| 1 | `01_prepare_data.py` | Download SQuAD 2.0, financial-qa-10K, CoQA, and FinanceBench; format as JSON |
+| 2 | `02_validate.py` | Smoke test: 1 prompt per benchmark through compress + LLM |
+| 3 | `03_grid_search.py` | Run all (prompt, compression, model) combos on val+test split; auto-resume with checkpoints |
+| 4 | `04_judge.py` | Judge answers via Qwen2.5-7B-Instruct on Modal GPU (vLLM); run with `modal run` |
+| 5 | `05_tune.py` | Sweep K × \|S_val\| grid via 5-fold cross-validation on val set; saves best config |
+| 6 | `06_build_router.py` | Embed prompts with Qwen3-Embedding-0.6B, K-means clustering, compute cluster stats |
+| 7 | `07_evaluate.py` | Deferral curves, AUC, QNC metrics; FinanceBench held-out evaluation; baselines |
+| 8 | `08_visualize.py` | Generate all plots (heatmaps, deferral curves, cost-quality tradeoffs) |
 
 ## File Structure
 
 ```
-router/
+BEAR-router/
 ├── config.py                           # API keys, model configs, compression tiers
 ├── requirements.txt
 ├── .env                                # API keys (gitignored)
@@ -129,21 +125,21 @@ router/
 │   ├── evaluate.py                     # Cost computation + judge prompt
 │   ├── router.py                       # Router class (embed -> cluster -> route)
 │   ├── data.py                         # Shared data loading utilities
-│   ├── embeddings.py                   # OpenAI embeddings with caching
+│   ├── embeddings.py                   # Qwen3-Embedding-0.6B with caching (local)
 │   ├── clustering.py                   # Cluster stats computation
-│   └── scoring.py                      # Scoring formula, deferral curves, AUC, QNC
+│   ├── scoring.py                      # Scoring formula, deferral curves, AUC, QNC
+│   └── judge.py                        # LLM judge via Qwen2.5-7B on Modal (vLLM)
 │
 ├── scripts/                            # Pipeline scripts (run in order)
 │   ├── 00_check_apis.py                # Verify all API endpoints
 │   ├── 01_prepare_data.py              # Download and format benchmark data
-│   ├── 01_validate.py                  # Smoke test
-│   ├── 02_grid_search.py              # Grid search with auto-resume + rate limiting
-│   ├── 03_build_router.py             # Embed, K-means, cluster stats
-│   ├── 03_llm_judge_batch.py          # Preferred alias for LLM-as-judge batch step
-│   ├── 04_evaluate.py                 # Deferral curves, AUC, QNC, FinanceBench
-│   ├── 05_visualize.py                # Generate all plots
-│   ├── 06_llm_judge_batch.py          # LLM-as-judge via OpenAI Batch API
-│   └── 08_tune_and_cv.py             # K-tuning via cross-validation
+│   ├── 02_validate.py                  # Smoke test
+│   ├── 03_grid_search.py              # Grid search with auto-resume + rate limiting
+│   ├── 04_judge.py                    # Judge answers via Modal GPU workers
+│   ├── 05_tune.py                     # Sweep K × |S_val| via cross-validation
+│   ├── 06_build_router.py             # Embed, K-means, cluster stats
+│   ├── 07_evaluate.py                 # Deferral curves, AUC, QNC, FinanceBench
+│   └── 08_visualize.py                # Generate all plots
 │
 ├── data/                               # Benchmark datasets
 │   ├── squad2_subset.json
@@ -172,8 +168,10 @@ The trained router is stored as three portable files (no pickle):
 ## Requirements
 
 ```
-anthropic, openai, httpx, pandas, numpy, scikit-learn, matplotlib, datasets, python-dotenv
+anthropic, openai, httpx, pandas, numpy, scikit-learn, matplotlib, datasets, python-dotenv, sentence-transformers
 ```
+
+LLM judging requires [Modal](https://modal.com) (`pip install modal && modal setup`).
 
 See `requirements.txt` for pinned versions.
 

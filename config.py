@@ -109,7 +109,7 @@ TEST_FRACTION = 0.20
 RANDOM_SEED = 42
 
 # ============ Clustering ============
-EMBEDDING_MODEL = "text-embedding-3-small" # by OpenAI
+EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 K_VALUES = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 
 # ============ Grid Search ============

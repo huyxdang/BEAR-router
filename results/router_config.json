@@ -1,0 +1,18 @@
+{
+  "models_available": [
+    "gpt-4.1-nano",
+    "claude-haiku",
+    "claude-sonnet",
+    "gpt-5.4"
+  ],
+  "agg_levels": [
+    0.0,
+    0.2,
+    0.4,
+    0.6,
+    0.8
+  ],
+  "n_clusters": 5,
+  "sval_size": 300,
+  "tuning_auc": 0.000843
+}

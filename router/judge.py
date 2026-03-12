@@ -80,28 +80,25 @@ def parse_verdict(text: str) -> str:
     return "incorrect"
 
 
+def _build_judge_batches(ground_truths, responses, batch_size=500):
+    prompts = [
+        JUDGE_TEMPLATE.format(ground_truth=gt, response=resp)
+        for gt, resp in zip(ground_truths, responses)
+    ]
+    batches = [prompts[i : i + batch_size] for i in range(0, len(prompts), batch_size)]
+    return prompts, batches
+
+
 def judge_responses(
     ground_truths: list[str],
     responses: list[str],
     batch_size: int = 500,
 ) -> list[str]:
-    """Judge a list of (ground_truth, response) pairs via Modal GPU workers.
-
-    Returns list of 'correct' or 'incorrect' strings, one per input pair.
-    Handles Modal context automatically — works from any Python script.
-    """
+    """Judge pairs via Modal GPU. Works from sync scripts (creates its own app.run)."""
     if not ground_truths:
         return []
 
-    prompts = [
-        JUDGE_TEMPLATE.format(ground_truth=gt, response=resp)
-        for gt, resp in zip(ground_truths, responses)
-    ]
-
-    batches = [
-        prompts[i : i + batch_size]
-        for i in range(0, len(prompts), batch_size)
-    ]
+    prompts, batches = _build_judge_batches(ground_truths, responses, batch_size)
 
     def _execute():
         judge = Judge()
@@ -117,3 +114,34 @@ def judge_responses(
 
     with app.run():
         return _execute()
+
+
+async def judge_responses_async(
+    ground_truths: list[str],
+    responses: list[str],
+    batch_size: int = 500,
+) -> list[str]:
+    """Judge pairs via Modal GPU. Works from async scripts (uses .aio())."""
+    if not ground_truths:
+        return []
+
+    prompts, batches = _build_judge_batches(ground_truths, responses, batch_size)
+
+    async with app.run.aio():
+        judge = Judge()
+        all_verdicts = []
+        async for i, batch_verdicts in aenumerate(judge.judge_batch.map.aio(batches)):
+            parsed = [parse_verdict(v) for v in batch_verdicts]
+            all_verdicts.extend(parsed)
+            print(
+                f"  Judge: batch {i + 1}/{len(batches)} | "
+                f"{len(all_verdicts)}/{len(prompts)} done"
+            )
+        return all_verdicts
+
+
+async def aenumerate(aiter, start=0):
+    i = start
+    async for item in aiter:
+        yield i, item
+        i += 1

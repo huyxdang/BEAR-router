@@ -8,3 +8,4 @@ python-dotenv>=1.0.0
 datasets>=3.0.0
 pyarrow>=17.0.0
 matplotlib
+sentence-transformers>=2.7.0

@@ -30,7 +30,7 @@ from router.evaluate import compute_cost
 from router.embeddings import embed_and_cache
 from router.compress import compress_async
 from router.llm import call_llm_async
-from router.judge import judge_responses
+from router.judge import judge_responses_async
 
 _api_semaphore = None
 
@@ -62,7 +62,9 @@ async def evaluate_openrouter_baseline(df_test: pd.DataFrame) -> dict:
     """
     from router.llm import call_openrouter_async
 
-    allowed_model_ids = [m["id"] for m in MODELS]
+    # OpenRouter limits `models` array to 3; drop cheapest (nano) since
+    # OpenRouter's auto-router wouldn't pick it over the others anyway.
+    allowed_model_ids = [m["id"] for m in MODELS if "nano" not in m["id"]][:3]
     or_to_model_config = {
         OPENROUTER_MODEL_IDS[m["id"]]: m
         for m in MODELS
@@ -107,7 +109,7 @@ async def evaluate_openrouter_baseline(df_test: pd.DataFrame) -> dict:
     print(f"    Judging {len(or_results)} OpenRouter responses via Modal...")
     gt_list = [ground_truths.get(r["prompt_id"], "") for r in or_results]
     resp_list = [r["response_text"] for r in or_results]
-    verdicts = judge_responses(gt_list, resp_list)
+    verdicts = await judge_responses_async(gt_list, resp_list)
 
     correct = sum(1 for v in verdicts if v == "correct")
     total = len(or_results)
@@ -224,7 +226,7 @@ async def evaluate_financebench(cluster_stats, kmeans, lambda_values=[0, 1, 10, 
         print(f"    Judging {len(valid_results)} FinanceBench responses (lambda={lam})...")
         gt_list = [r["ground_truth"] for r in valid_results]
         resp_list = [r["response_text"] for r in valid_results]
-        verdicts = judge_responses(gt_list, resp_list)
+        verdicts = await judge_responses_async(gt_list, resp_list)
 
         correct = sum(1 for v in verdicts if v == "correct")
         total = len(valid_results)
@@ -290,11 +292,16 @@ async def main():
     print(f"  GPT-5.4 acc={gpt54_baseline['accuracy']:.3f}  cost=${gpt54_baseline['cost']:.6f}")
 
     # ===== BASELINE 2: OpenRouter =====
-    print("\n  --- Baseline 2: OpenRouter (same pool, no compression) ---")
-    openrouter_baseline = await evaluate_openrouter_baseline(df_test)
-    print(f"  OpenRouter acc={openrouter_baseline['accuracy']:.3f}  "
-          f"cost=${openrouter_baseline['cost']:.6f}  "
-          f"n={openrouter_baseline['count']}")
+    skip_or = "--skip-openrouter" in sys.argv
+    if skip_or:
+        print("\n  --- Baseline 2: OpenRouter (SKIPPED) ---")
+        openrouter_baseline = {"accuracy": 0.0, "cost": 0.0, "count": 0}
+    else:
+        print("\n  --- Baseline 2: OpenRouter (same pool, no compression) ---")
+        openrouter_baseline = await evaluate_openrouter_baseline(df_test)
+        print(f"  OpenRouter acc={openrouter_baseline['accuracy']:.3f}  "
+              f"cost=${openrouter_baseline['cost']:.6f}  "
+              f"n={openrouter_baseline['count']}")
 
     # ===== BASELINE 3: UniRoute No Compression =====
     print("\n  --- Baseline 3: UniRoute No Compression (agg=0.0 only) ---")
@@ -355,20 +362,7 @@ async def main():
             if r["count"] > 0:
                 print(f"  {'router lambda=' + str(lam):<20s} acc={r['accuracy']:.3f}  cost=${r['cost']:.6f}")
 
-    # ===== OUT-OF-DOMAIN: FinanceBench =====
-    print("\n[6c] FinanceBench out-of-domain evaluation (live)...")
-
-    centroids_path = os.path.join(str(RESULTS_DIR), "centroids.npy")
-    centroids = np.load(centroids_path)
-    from sklearn.cluster import KMeans
-    n_clusters = len(centroids)
-    kmeans = KMeans(n_clusters=n_clusters)
-    kmeans.cluster_centers_ = centroids
-    kmeans._n_threads = 1
-
-    fb_results = await evaluate_financebench(cluster_stats, kmeans)
-
-    # Save results
+    # Save results (before FinanceBench so we don't lose everything if it fails)
     print("\n[7] Saving evaluation results...")
     eval_results = {
         "baselines": {
@@ -380,16 +374,41 @@ async def main():
         "auc_router": auc_router,
         "auc_no_compress": auc_no_compress,
         "qnc": qnc,
-        "financebench": fb_results,
+        "financebench": {},
     }
 
     eval_path = os.path.join(str(RESULTS_DIR), "evaluation.json")
+    router_curve.to_csv(os.path.join(str(RESULTS_DIR), "deferral_curve.csv"), index=False)
+    no_compress_curve.to_csv(os.path.join(str(RESULTS_DIR), "deferral_curve_no_compress.csv"), index=False)
+
     with open(eval_path, "w") as f:
         json.dump(eval_results, f, indent=2, default=str)
     print(f"  Saved to {eval_path}")
 
-    router_curve.to_csv(os.path.join(str(RESULTS_DIR), "deferral_curve.csv"), index=False)
-    no_compress_curve.to_csv(os.path.join(str(RESULTS_DIR), "deferral_curve_no_compress.csv"), index=False)
+    # ===== OUT-OF-DOMAIN: FinanceBench =====
+    skip_fb = "--skip-financebench" in sys.argv
+    if skip_fb:
+        print("\n[8] FinanceBench (SKIPPED)")
+    else:
+        print("\n[8] FinanceBench out-of-domain evaluation (live)...")
+        try:
+            centroids_path = os.path.join(str(RESULTS_DIR), "centroids.npy")
+            centroids = np.load(centroids_path)
+            from sklearn.cluster import KMeans
+            n_clusters = len(centroids)
+            kmeans = KMeans(n_clusters=n_clusters)
+            kmeans.cluster_centers_ = centroids
+            kmeans._n_threads = 1
+
+            fb_results = await evaluate_financebench(cluster_stats, kmeans)
+            eval_results["financebench"] = fb_results
+
+            with open(eval_path, "w") as f:
+                json.dump(eval_results, f, indent=2, default=str)
+            print(f"  Updated {eval_path}")
+        except Exception as e:
+            print(f"  FinanceBench failed: {e}")
+            print("  (Other results already saved)")
 
     print("\n" + "=" * 80)
     print("EVALUATION COMPLETE")

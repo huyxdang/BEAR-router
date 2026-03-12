@@ -76,17 +76,12 @@ def check_anthropic():
         return FAIL, str(e)
 
 
-def check_openai_embeddings():
-    """Test OpenAI embeddings API."""
-    if not OPENAI_API_KEY:
-        return SKIP, "OPENAI_API_KEY not set"
-
-    import openai
+def check_embeddings():
+    """Test local embedding model."""
     try:
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.embeddings.create(model=EMBEDDING_MODEL, input=[TEST_PROMPT])
-        dim = len(resp.data[0].embedding)
-        return PASS, f"{EMBEDDING_MODEL} -> {dim}-dim vector"
+        from router.embeddings import embed_single
+        emb = embed_single(TEST_PROMPT)
+        return PASS, f"{EMBEDDING_MODEL} -> {len(emb)}-dim vector"
     except Exception as e:
         return FAIL, str(e)
 
@@ -131,7 +126,7 @@ def main():
         ("Bear Compression", check_bear),
         ("OpenAI (chat)", check_openai),
         ("Anthropic (chat)", check_anthropic),
-        ("OpenAI (embeddings)", check_openai_embeddings),
+        ("Embeddings (local)", check_embeddings),
         ("OpenAI (batch API)", check_openai_batch),
         ("OpenRouter", check_openrouter),
     ]
